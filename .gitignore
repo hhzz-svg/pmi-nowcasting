@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
+
+# 处理后的中间表（可由 train.py 重新生成）
+data/processed/
+
+# IDE
+.idea/
+.vscode/
