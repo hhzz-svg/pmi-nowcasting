@@ -12,7 +12,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from . import ingest
 
 
 def load_hs300_monthly_returns() -> pd.Series:
@@ -26,17 +25,26 @@ def load_hs300_monthly_returns() -> pd.Series:
     return monthly_close.pct_change().rename("hs300_ret")
 
 
-def run_backtest(signal: pd.Series, market_ret: pd.Series) -> pd.DataFrame:
+def run_backtest(
+    signal: pd.Series, market_ret: pd.Series, cost_bps: float = 10.0
+) -> pd.DataFrame:
     """按信号择时，返回逐月策略/基准收益与净值。
 
     signal[t] = 对 t+1 月的预测（1=扩张持股，0=收缩持币）。
     该信号赚取的是 t+1 月的市场收益，故对齐时把信号前移一期。
+
+    cost_bps: 单边交易成本（基点）。每次仓位切换（0→1 买入 / 1→0 卖出）
+    在切换当月扣一次；默认 10bp，贴近 A 股场内基金的佣金+冲击成本量级。
     """
     df = pd.DataFrame({"signal": signal}).join(market_ret, how="inner")
     # 信号预测下月 → 用信号获取下月收益
-    df["strategy_ret"] = df["signal"].shift(1).fillna(0) * df["hs300_ret"]
-    df["buyhold_ret"] = df["hs300_ret"]
+    df["position"] = df["signal"].shift(1).fillna(0)
     df = df.dropna(subset=["hs300_ret"])
+    # 仓位变化（每次买或卖各计一次单边成本）
+    turnover = df["position"].diff().abs().fillna(df["position"].abs())
+    cost = turnover * (cost_bps / 1e4)
+    df["strategy_ret"] = df["position"] * df["hs300_ret"] - cost
+    df["buyhold_ret"] = df["hs300_ret"]
     df["strategy_nav"] = (1 + df["strategy_ret"]).cumprod()
     df["buyhold_nav"] = (1 + df["buyhold_ret"]).cumprod()
     return df

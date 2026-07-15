@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-from . import config
 
 
 def add_derived_signals(panel: pd.DataFrame) -> pd.DataFrame:

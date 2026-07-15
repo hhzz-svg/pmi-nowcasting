@@ -115,12 +115,27 @@ def main():
     # 经济价值回测
     try:
         mkt = backtest.load_hs300_monthly_returns()
-        bt = backtest.run_backtest(best_preds["y_pred"], mkt)
+        bt = backtest.run_backtest(best_preds["y_pred"], mkt, cost_bps=10.0)
         strat = backtest.performance_stats(bt["strategy_ret"])
         bh = backtest.performance_stats(bt["buyhold_ret"])
-        print(f"\n=== 经济价值回测（{best} 信号 vs 买入持有）===")
+        print(f"\n=== 经济价值回测（{best} 信号 vs 买入持有，含 10bp 单边成本）===")
         stat_df = pd.DataFrame({"策略": strat, "买入持有": bh}).T
         print(stat_df.round(3).to_string())
+
+        # 交易成本敏感性：策略优势随成本侵蚀（正面回应"未计成本"局限）
+        print("\n=== 交易成本敏感性（策略年化收益）===")
+        sweep = []
+        for c in (0.0, 5.0, 10.0, 20.0, 30.0):
+            s = backtest.run_backtest(best_preds["y_pred"], mkt, cost_bps=c)
+            st = backtest.performance_stats(s["strategy_ret"])
+            n_trades = int(s["position"].diff().abs().fillna(s["position"].abs()).sum())
+            sweep.append(
+                {"cost_bps": c, "annual_return": st["annual_return"], "sharpe": st["sharpe"], "换手次数": n_trades}
+            )
+        sweep_df = pd.DataFrame(sweep).set_index("cost_bps")
+        print(sweep_df.round(4).to_string())
+        sweep_df.round(6).to_csv(config.OUTPUT_DIR / "cost_sensitivity.csv", encoding="utf-8-sig")
+
         bt.to_csv(config.OUTPUT_DIR / "backtest.csv", encoding="utf-8-sig")
         _plot_results(summary, bt, best)
     except Exception as e:  # noqa: BLE001 - 行情接口不稳不应中断主流程
