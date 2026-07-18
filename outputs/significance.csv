@@ -1,0 +1,3 @@
+﻿模型,auc,ci_lo,ci_hi,delta_vs_naive,diff_p_value,mcnemar_p
+ensemble,0.7501,0.6304,0.8513,0.0176,0.565,1.0
+naive_persistence,0.7325,0.6312,0.8228,0.0,,

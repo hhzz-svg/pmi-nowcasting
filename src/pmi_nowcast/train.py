@@ -12,14 +12,27 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from . import backtest, config, dataset, evaluate, models, validation
+from . import (
+    ablation,
+    backtest,
+    config,
+    dataset,
+    evaluate,
+    models,
+    shap_analysis,
+    significance,
+    validation,
+)
 
 warnings.filterwarnings("ignore")
 
 
-def run_walk_forward(df: pd.DataFrame, target: str = "y_expansion") -> pd.DataFrame:
-    """对所有模型做扩展窗口 walk-forward，返回逐期样本外预测长表。
+def run_walk_forward(
+    df: pd.DataFrame, target: str = "y_expansion", scheme: str = "expanding"
+) -> pd.DataFrame:
+    """对所有模型做 walk-forward，返回逐期样本外预测长表。
 
+    scheme: "expanding"（扩展窗口，默认）或 "rolling"（固定长度滚动窗口）。
     列：asof_month, model, y_true, y_pred, y_proba
     """
     feat_cols = dataset.feature_columns(df)
@@ -28,9 +41,12 @@ def run_walk_forward(df: pd.DataFrame, target: str = "y_expansion") -> pd.DataFr
     months = df.index
 
     pmi_idx = feat_cols.index("pmi")
-    folds = validation.walk_forward_splits(len(df))
+    if scheme == "rolling":
+        folds = validation.rolling_window_splits(len(df))
+    else:
+        folds = validation.walk_forward_splits(len(df))
     validation.assert_no_leakage(folds, config.PURGE_MONTHS, config.EMBARGO_MONTHS)
-    print(f"[train] {len(folds)} 折 walk-forward，防泄漏自检通过")
+    print(f"[train] {len(folds)} 折 walk-forward（{scheme}），防泄漏自检通过")
 
     records = []
     for fold in folds:
@@ -66,7 +82,7 @@ def summarize(preds: pd.DataFrame) -> pd.DataFrame:
         m["n"] = len(g)
         rows.append(m)
     out = pd.DataFrame(rows).set_index("model")
-    cols = ["n", "accuracy", "precision", "recall", "f1", "auc"]
+    cols = ["n", "accuracy", "precision", "recall", "f1", "auc", "brier"]
     return out[cols].sort_values("auc", ascending=False)
 
 
@@ -112,6 +128,39 @@ def main():
     print(f"\n=== 最佳模型 '{best}' 混淆矩阵 ===")
     print(evaluate.confusion(best_preds["y_true"], best_preds["y_pred"]).to_string())
 
+    # 统计显著性：ML 与朴素持续基准的差异是真实的还是噪声？
+    _run_significance(preds, summary)
+
+    # 概率校准：可靠性曲线（nowcast 输出概率，校准很重要）
+    _plot_calibration(preds, summary)
+
+    # 特征组消融：哪一类经济信号真正带来样本外增益
+    try:
+        abl = ablation.run_ablation(df, target="y_expansion")
+        print("\n=== 特征组消融（剔除一组，看样本外 AUC 变化）===")
+        print(abl.round(4).to_string(index=False))
+        abl.round(6).to_csv(config.OUTPUT_DIR / "ablation.csv", index=False, encoding="utf-8-sig")
+        _plot_ablation(abl)
+    except Exception as e:  # noqa: BLE001
+        print(f"[train] 消融跳过: {type(e).__name__}: {str(e)[:80]}")
+
+    # 分时期表现拆解：不同宏观阶段（2015 放缓 / 2020 疫情 / 2022 冲击等）是否稳健
+    _run_regime_breakdown(preds, best)
+
+    # 第二任务：方向预测（下月 PMI 是否较本月上行）
+    _run_direction_task(df)
+
+    # 验证稳健性：滚动窗口 vs 扩展窗口
+    _run_window_comparison(df, preds)
+
+    # SHAP 特征贡献（进阶可解释性；shap 未装则自动跳过）
+    try:
+        shap_imp = shap_analysis.run_shap(df, target="y_expansion")
+        print("\n=== SHAP 平均绝对贡献（Top-8）===")
+        print(shap_imp.head(8).round(4).to_string())
+    except Exception as e:  # noqa: BLE001
+        print(f"[train] SHAP 跳过: {type(e).__name__}: {str(e)[:80]}")
+
     # 经济价值回测
     try:
         mkt = backtest.load_hs300_monthly_returns()
@@ -144,6 +193,52 @@ def main():
     print(f"\n[train] 全部产出已存至 {config.OUTPUT_DIR}")
 
 
+def _run_significance(preds: pd.DataFrame, summary: pd.DataFrame):
+    """检验 AUC 最高的 ML 模型与 naive_persistence 的差异是否统计显著。
+
+    朴素持续基准是本项目的"擂主"。若某 ML 模型 AUC 名义更高，必须回答：
+    这点优势跨得过抽样噪声吗？给出 bootstrap 置信区间 + 配对差检验 + McNemar。
+    """
+    if "naive_persistence" not in summary.index:
+        return
+    ml = [m for m in summary.index if not m.startswith("naive")]
+    if not ml:
+        return
+    challenger = summary.loc[ml, "auc"].idxmax()  # 最强 ML 挑战者
+
+    pv = preds.pivot_table(
+        index="asof_month", columns="model", values=["y_true", "y_pred", "y_proba"]
+    )
+    y_true = pv["y_true"]["naive_persistence"].to_numpy()
+    pa = pv["y_proba"][challenger].to_numpy()
+    pb = pv["y_proba"]["naive_persistence"].to_numpy()
+
+    ci_a = significance.bootstrap_auc_ci(y_true, pa)
+    ci_b = significance.bootstrap_auc_ci(y_true, pb)
+    diff = significance.bootstrap_auc_diff(y_true, pa, pb)
+    mc = significance.mcnemar_test(
+        y_true, pv["y_pred"][challenger].to_numpy(), pv["y_pred"]["naive_persistence"].to_numpy()
+    )
+
+    print(f"\n=== 统计显著性：{challenger} vs naive_persistence ===")
+    print(f"  {challenger:18s} AUC={ci_a['auc']:.3f}  95%CI[{ci_a['lo']:.3f}, {ci_a['hi']:.3f}]")
+    print(f"  naive_persistence  AUC={ci_b['auc']:.3f}  95%CI[{ci_b['lo']:.3f}, {ci_b['hi']:.3f}]")
+    print(f"  ΔAUC(ML-naive)={diff['diff']:+.3f}  95%CI[{diff['lo']:+.3f}, {diff['hi']:+.3f}]  p={diff['p_value']:.3f}")
+    print(f"  McNemar: ML对/naive错={mc['n_ab']}, ML错/naive对={mc['n_ba']}, p={mc['p_value']:.3f}")
+    verdict = "差异不显著（CI 跨 0）——'打平'结论成立" if diff["lo"] <= 0 <= diff["hi"] else "差异显著"
+    print(f"  结论：{verdict}")
+
+    rows = [
+        {"模型": challenger, "auc": ci_a["auc"], "ci_lo": ci_a["lo"], "ci_hi": ci_a["hi"]},
+        {"模型": "naive_persistence", "auc": ci_b["auc"], "ci_lo": ci_b["lo"], "ci_hi": ci_b["hi"]},
+    ]
+    sig_df = pd.DataFrame(rows)
+    sig_df["delta_vs_naive"] = [diff["diff"], 0.0]
+    sig_df["diff_p_value"] = [diff["p_value"], np.nan]
+    sig_df["mcnemar_p"] = [mc["p_value"], np.nan]
+    sig_df.round(4).to_csv(config.OUTPUT_DIR / "significance.csv", index=False, encoding="utf-8-sig")
+
+
 def _plot_results(summary: pd.DataFrame, bt: pd.DataFrame, best: str):
     import matplotlib
     matplotlib.use("Agg")
@@ -162,6 +257,180 @@ def _plot_results(summary: pd.DataFrame, bt: pd.DataFrame, best: str):
     fig.tight_layout()
     fig.savefig(config.OUTPUT_DIR / "nav_curve.png", dpi=120)
     plt.close(fig)
+
+
+def _plot_calibration(preds: pd.DataFrame, summary: pd.DataFrame):
+    """画连续概率模型的可靠性曲线（校准图）。朴素多数类概率恒定，不含信息，略过。"""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    # 只画有概率区分度的模型（naive_majority 概率恒定，naive_persistence 概率仅取 0/1）
+    show = [m for m in summary.index if m not in ("naive_majority", "naive_persistence")]
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.5, label="完美校准")
+    for name in show:
+        g = preds[preds["model"] == name]
+        rc = evaluate.reliability_curve(g["y_true"], g["y_proba"], n_bins=5)
+        if rc.empty:
+            continue
+        brier = summary.loc[name, "brier"]
+        ax.plot(rc["mean_pred"], rc["frac_pos"], "o-", label=f"{name} (Brier={brier:.3f})")
+    ax.set_xlabel("平均预测扩张概率")
+    ax.set_ylabel("实际扩张频率")
+    ax.set_title("概率校准（可靠性曲线，walk-forward 样本外）")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(config.OUTPUT_DIR / "calibration_curve.png", dpi=120)
+    plt.close(fig)
+
+
+def _plot_ablation(abl: pd.DataFrame):
+    """画特征组消融的 ΔAUC 条形图（相对全特征基准）。"""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    body = abl[abl["剔除组"] != "（全特征基准）"].copy()
+    colors = ["#c0392b" if d < 0 else "#27ae60" for d in body["delta_auc"]]
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.barh(body["剔除组"], body["delta_auc"], color=colors)
+    ax.axvline(0, color="k", linewidth=0.8)
+    ax.set_xlabel("ΔAUC（剔除该组后 - 全特征基准）")
+    ax.set_title("特征组消融：负值=该组不可或缺，正值=拿掉反而更好（噪声）")
+    ax.grid(alpha=0.3, axis="x")
+    fig.tight_layout()
+    fig.savefig(config.OUTPUT_DIR / "ablation.png", dpi=120)
+    plt.close(fig)
+
+
+def _run_window_comparison(df: pd.DataFrame, expanding_preds: pd.DataFrame):
+    """对比扩展窗口 vs 固定滚动窗口的样本外表现。
+
+    扩展窗口用尽全部历史（假设关系稳定）；滚动窗口只用近 N 年（假设关系随时代漂移，
+    更早的样本反而是噪声）。宏观关系是否有"结构性漂移"，用这两条窗口的差异来体察。
+    对每个模型分别在两种窗口下算 AUC，并列展示。
+
+    扩展窗口结果直接复用主流程已算好的 expanding_preds（二者完全一致），
+    只补跑滚动窗口一遍，避免重复一次昂贵的全模型 walk-forward。
+    """
+    try:
+        exp = summarize(expanding_preds)
+        roll = summarize(run_walk_forward(df, target="y_expansion", scheme="rolling"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[train] 窗口对比跳过: {type(e).__name__}: {str(e)[:80]}")
+        return
+    cmp = pd.DataFrame(
+        {
+            "扩展窗口_auc": exp["auc"],
+            "滚动窗口_auc": roll["auc"],
+        }
+    )
+    cmp["Δ(滚动-扩展)"] = cmp["滚动窗口_auc"] - cmp["扩展窗口_auc"]
+    cmp = cmp.sort_values("扩展窗口_auc", ascending=False)
+    print("\n=== 扩展窗口 vs 固定滚动窗口（样本外 AUC）===")
+    print(cmp.round(4).to_string())
+    cmp.round(4).to_csv(config.OUTPUT_DIR / "window_comparison.csv", encoding="utf-8-sig")
+
+
+def _run_regime_breakdown(preds: pd.DataFrame, best: str):
+    """分时期拆解：同一模型在不同宏观阶段的样本外表现是否稳定？
+
+    整体一个 AUC 会掩盖"某些时期特别好、某些时期彻底失灵"。按中国宏观史
+    划分几个有经济含义的阶段，分别算准确率与 AUC，暴露模型的稳健性/脆弱性。
+
+    时段（按预测基准月 asof_month）：
+      危机后复苏(08-11) / 增速换挡(12-14) / 股灾供改(15-16) /
+      贸易战(18-19) / 疫情冲击(20) / 后疫情反复(21-22) / 弱复苏(23-)
+    """
+    regimes = [
+        ("危机后复苏(08-11)", "2008-01", "2011-12"),
+        ("增速换挡(12-14)", "2012-01", "2014-12"),
+        ("股灾供改(15-16)", "2015-01", "2016-12"),
+        ("平稳(17)", "2017-01", "2017-12"),
+        ("贸易战(18-19)", "2018-01", "2019-12"),
+        ("疫情冲击(20)", "2020-01", "2020-12"),
+        ("后疫情反复(21-22)", "2021-01", "2022-12"),
+        ("弱复苏(23-)", "2023-01", "2025-12"),
+    ]
+    g = preds[preds["model"] == best].copy()
+    g["asof_month"] = pd.to_datetime(g["asof_month"])
+    rows = []
+    for name, lo, hi in regimes:
+        seg = g[(g["asof_month"] >= lo) & (g["asof_month"] <= hi)]
+        if len(seg) == 0:
+            continue
+        m = evaluate.classification_metrics(seg["y_true"], seg["y_pred"], seg["y_proba"])
+        rows.append(
+            {
+                "时期": name,
+                "n": len(seg),
+                "accuracy": m["accuracy"],
+                "auc": m["auc"],
+                "扩张占比": float(seg["y_true"].mean()),
+            }
+        )
+    if not rows:
+        return
+    reg_df = pd.DataFrame(rows)
+    print(f"\n=== 分时期表现拆解（{best}，样本外）===")
+    print(reg_df.round(3).to_string(index=False))
+    reg_df.round(4).to_csv(config.OUTPUT_DIR / "regime_breakdown.csv", index=False, encoding="utf-8-sig")
+    _plot_regime(reg_df, best)
+
+
+def _plot_regime(reg_df: pd.DataFrame, best: str):
+    """分时期准确率条形图，叠加整体基准线，直观看哪些阶段模型失灵。"""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    overall = reg_df["accuracy"].mean()
+    colors = ["#27ae60" if a >= 0.5 else "#c0392b" for a in reg_df["accuracy"]]
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.bar(reg_df["时期"], reg_df["accuracy"], color=colors)
+    ax.axhline(0.5, color="k", linestyle="--", linewidth=0.8, label="抛硬币(0.5)")
+    ax.axhline(overall, color="#2980b9", linestyle=":", linewidth=1.2, label=f"各期均值({overall:.2f})")
+    ax.set_ylabel("样本外准确率")
+    ax.set_title(f"分时期表现拆解（{best}）：绿=胜过抛硬币，红=失灵")
+    ax.set_ylim(0, 1)
+    ax.legend()
+    for i, (a, n) in enumerate(zip(reg_df["accuracy"], reg_df["n"])):
+        ax.text(i, a + 0.02, f"n={n}", ha="center", fontsize=8)
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(config.OUTPUT_DIR / "regime_breakdown.png", dpi=120)
+    plt.close(fig)
+
+
+def _run_direction_task(df: pd.DataFrame):
+    """第二任务：预测下月 PMI 是否较本月上行（y_direction）。
+
+    扩张/收缩（相对荣枯线 50）与上行/下行（相对上月）是两种不同的景气问法。
+    复用同一 walk-forward 管线，几乎零额外代码即把实验内容翻倍。
+    """
+    try:
+        preds = run_walk_forward(df, target="y_direction")
+        if preds.empty:
+            print("\n[train] 方向任务样本不足，跳过")
+            return
+        summary = summarize(preds)
+        print("\n=== 第二任务：方向预测（下月 PMI 上行 vs 下行，walk-forward）===")
+        print(summary.round(3).to_string())
+        preds.to_csv(config.OUTPUT_DIR / "oos_predictions_direction.csv", index=False, encoding="utf-8-sig")
+        summary.round(4).to_csv(config.OUTPUT_DIR / "metrics_direction.csv", encoding="utf-8-sig")
+    except Exception as e:  # noqa: BLE001
+        print(f"[train] 方向任务跳过: {type(e).__name__}: {str(e)[:80]}")
 
 
 if __name__ == "__main__":

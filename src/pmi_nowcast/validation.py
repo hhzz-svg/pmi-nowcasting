@@ -69,6 +69,40 @@ def walk_forward_splits(
     return folds
 
 
+def rolling_window_splits(
+    n_samples: int,
+    window: int = config.MIN_TRAIN_MONTHS,
+    purge: int = config.PURGE_MONTHS,
+    embargo: int = config.EMBARGO_MONTHS,
+    test_size: int = 1,
+) -> list[Fold]:
+    """生成固定滚动窗口 walk-forward 折（对照扩展窗口）。
+
+    与 walk_forward_splits 的唯一区别：训练集长度固定为 window（只保留最近
+    window 个样本），而非从头累积。用于回答"用全部历史 vs 只用近期历史，
+    哪个样本外更好"——若宏观关系随时代漂移（structural break），滚动窗口
+    可能更优；若关系稳定、样本珍贵，扩展窗口更优。
+
+    对第 k 期：
+      test  = [test_start, test_start + test_size)
+      train = [train_end - window, train_end)，其中 train_end = test_start - embargo - purge
+    训练窗口大小恒定，随 k 整体右移。
+    """
+    folds: list[Fold] = []
+    test_start = window + purge + embargo
+    while test_start + test_size <= n_samples:
+        train_end = test_start - embargo - purge  # 独占上界
+        train_start = max(0, train_end - window)
+        if train_end <= train_start:
+            test_start += test_size
+            continue
+        train_idx = np.arange(train_start, train_end)
+        test_idx = np.arange(test_start, test_start + test_size)
+        folds.append(Fold(train_idx=train_idx, test_idx=test_idx))
+        test_start += test_size
+    return folds
+
+
 def assert_no_leakage(folds: list[Fold], purge: int, embargo: int) -> None:
     """自检：每一折训练集最大下标与测试集最小下标之间，至少隔 purge+embargo。
 

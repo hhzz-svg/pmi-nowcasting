@@ -64,6 +64,32 @@ class NaivePersistence:
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
+class SoftEnsemble:
+    """概率软融合：等权平均若干子模型的 predict_proba[:,1]。
+
+    动机：naive_persistence 抓住了 PMI 强惯性（AUC 高），ML 模型抓非线性/多变量
+    交互但单独打不过它。把两者概率等权平均，看能否兼收并蓄、稳定超过单一模型。
+    这是一个诚实的"能否做得更好"的尝试，而非调参凑指标。
+
+    子模型在 fit 时各自独立训练，故不引入额外泄漏（每折仍只见训练集）。
+    """
+
+    def __init__(self, members: list):
+        self.members = members
+
+    def fit(self, X, y):
+        for m in self.members:
+            m.fit(X, y)
+        return self
+
+    def predict_proba(self, X):
+        ps = np.mean([m.predict_proba(X)[:, 1] for m in self.members], axis=0)
+        return np.column_stack([1 - ps, ps])
+
+    def predict(self, X):
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
+
 def make_models(pmi_col_index: int | None = None) -> dict:
     """构造模型字典。小样本下所有模型都开较强正则 / 限制复杂度。"""
     models: dict = {
@@ -103,6 +129,17 @@ def make_models(pmi_col_index: int | None = None) -> dict:
         )
     if pmi_col_index is not None:
         models["naive_persistence"] = NaivePersistence(pmi_col_index)
+        # 混合集成：随机森林（多变量非线性）+ 持续基准（PMI 强惯性）等权融合。
+        rf_member = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=4,
+            min_samples_leaf=5,
+            class_weight="balanced",
+            random_state=config.RANDOM_STATE,
+        )
+        models["ensemble"] = SoftEnsemble(
+            [rf_member, NaivePersistence(pmi_col_index)]
+        )
     return models
 
 
