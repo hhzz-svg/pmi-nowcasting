@@ -1,5 +1,7 @@
 # PMI Nowcasting — 制造业景气度即时预测
 
+![PMI Nowcasting 制造业景气度即时预测项目海报](assets/pmi-nowcasting-poster.png)
+
 > 用央行真在用的 **Nowcasting** 方法，预测下月制造业 PMI 是否站上荣枯线（>50）。
 > 卖点不是技术栈，而是**方法论的严谨性**：时点意识、walk-forward 验证、系统性防数据泄漏、经济价值评估。
 
