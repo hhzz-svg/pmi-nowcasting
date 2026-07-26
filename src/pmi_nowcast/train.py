@@ -18,6 +18,8 @@ from . import (
     config,
     dataset,
     evaluate,
+    horizon,
+    level_task,
     models,
     shap_analysis,
     significance,
@@ -149,6 +151,12 @@ def main():
 
     # 第二任务：方向预测（下月 PMI 是否较本月上行）
     _run_direction_task(df)
+
+    # 第三任务：PMI 点位回归（预测具体数值 + DM 显著性）
+    _run_level_task(df)
+
+    # 多步时距：h=1/2/3 月，可预测性衰减曲线
+    _run_horizon_experiment(df)
 
     # 验证稳健性：滚动窗口 vs 扩展窗口
     _run_window_comparison(df, preds)
@@ -431,6 +439,41 @@ def _run_direction_task(df: pd.DataFrame):
         summary.round(4).to_csv(config.OUTPUT_DIR / "metrics_direction.csv", encoding="utf-8-sig")
     except Exception as e:  # noqa: BLE001
         print(f"[train] 方向任务跳过: {type(e).__name__}: {str(e)[:80]}")
+
+
+def _run_level_task(df: pd.DataFrame):
+    """第三任务：点位回归。持续基准（预测零变化）第三次上场当擂主。"""
+    try:
+        preds = level_task.run_level_walk_forward(df)
+        if preds.empty:
+            print("\n[train] 点位回归样本不足，跳过")
+            return
+        summary = level_task.summarize_level(preds)
+        print("\n=== 第三任务：PMI 点位回归（walk-forward 样本外）===")
+        print(summary.round(3).to_string())
+        sig = level_task.run_level_significance(preds, summary)
+        print("\n--- MAE 优势 vs 持续基准（配对自助 DM 检验，正=模型更准）---")
+        print(sig.round(4).to_string())
+        preds.to_csv(config.OUTPUT_DIR / "oos_predictions_level.csv", index=False, encoding="utf-8-sig")
+        summary.round(4).to_csv(config.OUTPUT_DIR / "level_metrics.csv", encoding="utf-8-sig")
+        sig.round(4).to_csv(config.OUTPUT_DIR / "level_significance.csv", encoding="utf-8-sig")
+        best = summary.index[0]
+        level_task.plot_level_forecast(preds, best, config.OUTPUT_DIR / "level_forecast.png")
+    except Exception as e:  # noqa: BLE001
+        print(f"[train] 点位回归跳过: {type(e).__name__}: {str(e)[:80]}")
+
+
+def _run_horizon_experiment(df: pd.DataFrame):
+    """多步时距：AUC 随预测距离 h 的衰减曲线。"""
+    try:
+        wide, long = horizon.run_horizon_experiment(df)
+        print("\n=== 多步时距：样本外 AUC 随预测距离衰减（h=1/2/3 月）===")
+        print(wide.round(4).to_string())
+        wide.round(4).to_csv(config.OUTPUT_DIR / "horizon_comparison.csv", encoding="utf-8-sig")
+        long.round(4).to_csv(config.OUTPUT_DIR / "horizon_detail.csv", index=False, encoding="utf-8-sig")
+        horizon.plot_horizon(wide, config.OUTPUT_DIR / "horizon_curve.png")
+    except Exception as e:  # noqa: BLE001
+        print(f"[train] 多步时距跳过: {type(e).__name__}: {str(e)[:80]}")
 
 
 if __name__ == "__main__":

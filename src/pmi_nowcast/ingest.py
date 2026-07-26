@@ -34,7 +34,7 @@ def _parse_month(series: pd.Series) -> pd.Series:
     return parsed.dt.to_period("M").dt.to_timestamp()
 
 
-def _cache_path(name: str, stamp: str) -> "config.Path":
+def _cache_path(name: str, stamp: str) -> config.Path:
     return config.RAW_DIR / f"{name}_{stamp}.csv"
 
 
@@ -43,10 +43,46 @@ def _latest_cache(name: str):
     return files[-1] if files else None
 
 
+def load_hs300_monthly() -> pd.DataFrame:
+    """沪深300 日频行情聚合成月频市场特征：月收益率 + 月内已实现波动。
+
+    价格在月末收盘即完全可得（PUBLICATION_LAG=0），是全部特征里最"即时"的
+    信号——这正是 nowcasting 用金融市场数据抢跑宏观发布的经典思路。
+    返回已成形的 ['month', 'hs300_ret', 'hs300_vol']，无需再过 _shape。
+    """
+    df = ak.stock_zh_index_daily(symbol="sh000300")
+    df["date"] = pd.to_datetime(df["date"])
+    close = df.set_index("date").sort_index()["close"]
+    daily_ret = close.pct_change()
+    monthly = pd.DataFrame(
+        {
+            "hs300_ret": close.resample("MS").last().pct_change(),
+            "hs300_vol": daily_ret.resample("MS").std(),
+        }
+    )
+    monthly = monthly.dropna().reset_index().rename(columns={"date": "month"})
+    return monthly
+
+
 def fetch_indicator(name: str, spec: dict, use_cache: bool = True) -> pd.DataFrame:
-    """拉取单个指标，返回列 = ['month', <renamed value cols>]。"""
-    today = dt.date.today().isoformat()
+    """拉取单个指标，返回列 = ['month', <renamed value cols>]。
+
+    标准指标：akshare 函数 → 缓存原始表 → _shape 裁剪。
+    自定义指标（spec 含 'custom'）：loader 直接产出成形表，缓存亦为成形表。
+    """
+    today = dt.datetime.now(tz=dt.timezone.utc).date().isoformat()
     path = _cache_path(name, today)
+
+    if "custom" in spec:
+        if use_cache:
+            cached = _latest_cache(name)
+            if cached is not None:
+                out = pd.read_csv(cached)
+                out["month"] = pd.to_datetime(out["month"])
+                return out
+        out = globals()[spec["custom"]]()
+        out.to_csv(path, index=False, encoding="utf-8-sig")
+        return out
 
     if use_cache:
         cached = _latest_cache(name)
@@ -69,6 +105,9 @@ def _shape(raw: pd.DataFrame, spec: dict) -> pd.DataFrame:
         df[src] = pd.to_numeric(df[src], errors="coerce")
     out = df[["month", *keep.keys()]].rename(columns=keep)
     out = out.dropna(subset=["month"]).sort_values("month")
+    # 同一月可能有多条报告行（初值/终值/预告），预告行的值为空。
+    # 先剔除全空值行，再按月去重保留最后一条，避免空的预告行覆盖有值行。
+    out = out.dropna(subset=list(keep.values()), how="all")
     out = out.drop_duplicates(subset="month", keep="last").reset_index(drop=True)
     return out
 

@@ -41,7 +41,7 @@ def build_pit_panel(indicators: dict[str, pd.DataFrame]) -> pd.DataFrame:
       2) 作为标签（下月 PMI）由 dataset.py 单独处理，不在此对齐。
     """
     aligned: list[pd.DataFrame] = []
-    for name, df in indicators.items():
+    for df in indicators.values():
         value_cols = [c for c in df.columns if c != "month"]
         for col in value_cols:
             lag = config.PUBLICATION_LAG.get(col, 1)

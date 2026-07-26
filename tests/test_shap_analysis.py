@@ -9,7 +9,7 @@ import pytest
 
 shap = pytest.importorskip("shap")  # 缺 shap 则整文件跳过（进阶可选依赖）
 
-from pmi_nowcast import dataset, shap_analysis  # noqa: E402
+from pmi_nowcast import dataset, shap_analysis
 
 
 def _toy_df(n: int = 200, seed: int = 0) -> pd.DataFrame:

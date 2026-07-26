@@ -75,6 +75,31 @@ def bootstrap_auc_diff(
     return {"diff": float(point), "lo": float(lo), "hi": float(hi), "p_value": p_value}
 
 
+def bootstrap_loss_diff(
+    loss_a, loss_b, n_boot: int = 2000, seed: int = 42, alpha: float = 0.05
+) -> dict:
+    """两模型逐点损失差 (B - A) 的配对自助检验——Diebold-Mariano 检验的自助版。
+
+    用于回归任务：loss_a / loss_b 为两模型在同一批样本外点上的逐点损失
+    （如绝对误差 |e_t|）。检验 mean(loss_b - loss_a) 是否显著异于 0，
+    即"A 是否真的比 B 准"。配对（同下标重采样）消除样本难易的共同波动。
+
+    返回 {diff, lo, hi, p_value}；diff>0 表示 A 的平均损失更小（A 更准）。
+    """
+    loss_a = np.asarray(loss_a, dtype=float)
+    loss_b = np.asarray(loss_b, dtype=float)
+    d = loss_b - loss_a  # 逐点损失差
+    n = len(d)
+    point = float(d.mean())
+    rng = np.random.default_rng(seed)
+    means = np.array([d[rng.integers(0, n, n)].mean() for _ in range(n_boot)])
+    lo, hi = np.percentile(means, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    frac_le0 = float(np.mean(means <= 0))
+    frac_ge0 = float(np.mean(means >= 0))
+    p_value = min(1.0, 2 * min(frac_le0, frac_ge0))
+    return {"diff": point, "lo": float(lo), "hi": float(hi), "p_value": p_value}
+
+
 def mcnemar_test(y_true, pred_a, pred_b) -> dict:
     """McNemar 配对检验：比较两模型逐点预测的对错模式。
 

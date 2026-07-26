@@ -23,6 +23,10 @@ def build_labels(indicators: dict[str, pd.DataFrame]) -> pd.DataFrame:
     还保留 pmi_next 原值用于回测。
     """
     pmi = indicators["pmi"].set_index("month")["pmi"].sort_index()
+    # 补齐连续月度索引再 shift：若历史上有漏发月份，按"行"位移会跨月错位，
+    # 按连续日历索引位移才保证 shift(-h) 恰是 h 个日历月之后。
+    full_idx = pd.period_range(pmi.index.min(), pmi.index.max(), freq="M").to_timestamp()
+    pmi = pmi.reindex(full_idx)
     pmi_next = pmi.shift(-1)  # 把 t+1 的 PMI 对到 t 行
     has_next = pmi_next.notna()  # 无下月数据时标签应为 NA，而非 False→0
     labels = pd.DataFrame(
@@ -33,6 +37,12 @@ def build_labels(indicators: dict[str, pd.DataFrame]) -> pd.DataFrame:
             "y_direction": (pmi_next > pmi).where(has_next).astype("Int64"),
         }
     )
+    # 多步时距标签：t+2 / t+3 月是否扩张（horizon.py 的多步实验用）
+    for h in (2, 3):
+        pmi_h = pmi.shift(-h)
+        labels[f"y_expansion_h{h}"] = (
+            (pmi_h > config.EXPANSION_THRESHOLD).where(pmi_h.notna()).astype("Int64")
+        )
     labels.index.name = "asof_month"
     return labels
 
@@ -65,7 +75,14 @@ def build_dataset(use_cache: bool = True) -> pd.DataFrame:
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
     """训练用特征列 = 全部列去掉标签/辅助列。"""
-    label_like = {"pmi_current", "pmi_next", "y_expansion", "y_direction"}
+    label_like = {
+        "pmi_current",
+        "pmi_next",
+        "y_expansion",
+        "y_direction",
+        "y_expansion_h2",
+        "y_expansion_h3",
+    }
     return [c for c in df.columns if c not in label_like]
 
 

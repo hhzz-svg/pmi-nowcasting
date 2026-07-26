@@ -25,6 +25,8 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "价格": ("cpi_yoy", "ppi_yoy"),
     "实体活动": ("ip_yoy",),
     "信用": ("credit_yoy",),
+    "外需": ("export_yoy",),
+    "市场": ("hs300_ret", "hs300_vol"),
 }
 
 

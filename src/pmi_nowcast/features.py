@@ -15,7 +15,6 @@ from __future__ import annotations
 import pandas as pd
 
 
-
 def add_derived_signals(panel: pd.DataFrame) -> pd.DataFrame:
     """加衍生特征：M1-M2 剪刀差。"""
     out = panel.copy()

@@ -25,5 +25,13 @@ def test_group_no_prefix_collision():
 
 
 def test_all_groups_defined():
-    """五个经济组齐全，覆盖设计文档的四条传导链 + 信用。"""
-    assert set(ablation.FEATURE_GROUPS) == {"PMI惯性", "货币金融", "价格", "实体活动", "信用"}
+    """七个经济组齐全：四条传导链 + 信用 + 外需 + 市场（数据范围扩充后）。"""
+    assert set(ablation.FEATURE_GROUPS) == {
+        "PMI惯性",
+        "货币金融",
+        "价格",
+        "实体活动",
+        "信用",
+        "外需",
+        "市场",
+    }

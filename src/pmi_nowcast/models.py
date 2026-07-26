@@ -29,7 +29,7 @@ class NaiveMajority:
 
     def fit(self, X, y):
         y = np.asarray(y)
-        self.majority_ = int(round(y.mean()))
+        self.majority_ = round(float(y.mean()))
         self.p_ = float(y.mean())
         return self
 

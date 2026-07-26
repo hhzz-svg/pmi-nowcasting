@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 
 
-
 def load_hs300_monthly_returns() -> pd.Series:
     """沪深300 月度收益率，index 归一到月初，与预测面板对齐。"""
     import akshare as ak
