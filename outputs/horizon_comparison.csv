@@ -1,0 +1,7 @@
+﻿model,h=1,h=2,h=3
+ensemble,0.757,0.5806,0.5769
+naive_persistence,0.728,0.5549,0.5549
+xgboost,0.7173,0.5983,0.5653
+random_forest,0.7082,0.5769,0.5647
+logreg,0.6081,0.5269,0.4866
+naive_majority,0.5788,0.601,0.5733

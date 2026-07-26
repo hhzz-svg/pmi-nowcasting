@@ -1,7 +1,7 @@
 ﻿model,扩展窗口_auc,滚动窗口_auc,Δ(滚动-扩展)
-ensemble,0.7501,0.7626,0.0125
-naive_persistence,0.7325,0.7325,0.0
-random_forest,0.7062,0.7122,0.006
-xgboost,0.7035,0.7003,-0.0033
-logreg,0.6098,0.5989,-0.0108
-naive_majority,0.561,0.6152,0.0542
+ensemble,0.757,0.7619,0.0049
+naive_persistence,0.728,0.728,0.0
+xgboost,0.7173,0.6954,-0.022
+random_forest,0.7082,0.7057,-0.0024
+logreg,0.6081,0.569,-0.0391
+naive_majority,0.5788,0.6502,0.0714

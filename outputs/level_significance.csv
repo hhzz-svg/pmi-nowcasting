@@ -1,0 +1,4 @@
+﻿model,mae_gain_vs_naive,ci_lo,ci_hi,p_value
+random_forest,0.104,-0.1863,0.5088,0.647
+ridge,-0.2029,-0.4174,-0.0176,0.036
+xgboost,-0.3746,-0.744,0.0221,0.066
